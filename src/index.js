@@ -1,4 +1,4 @@
-import {Flint, KeyValAdapter} from './../../gun-flint';
+import {Flint, KeyValAdapter} from 'gun-flint';
 import Connector from './Connector';
 
 const type = {
