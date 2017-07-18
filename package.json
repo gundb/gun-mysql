@@ -1,6 +1,6 @@
 {
   "name": "gun-mysql",
-  "version": "0.0.0",
+  "version": "0.0.1",
   "description": "An MySQL adapter for Gunjs",
   "main": "dist/index.js",
   "scripts": {
