@@ -51,9 +51,13 @@ function coerce(typeKey, val) {
 }
 
 function coerceResults(results = []) {
-    results.forEach(result => {
-        result.val = !isNil(result.val) ? coerce(result.type, result.val) : "";
-    });
+    if (typeof results === 'array') {
+        results.forEach(result => {
+            result.val = !isNil(result.val) ? coerce(result.type, result.val) : "";
+        });
+    } else {
+        results.val = !isNil(results.val) ? coerce(results.type, results.val) : "";
+    }
     return results;
 }
 
@@ -70,14 +74,38 @@ Flint.register(new KeyValAdapter({
                 const get = this.get.bind(this, key, done);
                 setTimeout(get, 500);
             } else {
-                this.mysql.query(`SELECT * FROM ${this.mysqlOptions.table} WHERE` + '`key`' + `= '${key}';`, (err, results, fields) => {
-                    if (err) {
-                        done(this.errors.internal);
-                    } else {
-                        let err = !results || results.length === 0 ? this.errors.lost : null;
-                        done(err, coerceResults(results));
-                    }
-                });
+                const connection = this.mysql.queryStream(`SELECT * FROM ${this.mysqlOptions.table} WHERE` + '`key`' + `= '${key}';`);
+                let receivedResults = false;
+                let returnErr = null;
+
+                // Stream Results back to gun
+                connection
+                    .on('error', err => {
+                        
+                        // Catch the err, retun on `end` event
+                        returnErr = this.errors.internal;
+                    })
+                    .on('fields', fields => {
+                        // the field packets for the rows to follow
+                        //console.log(fields); ignore
+                    })
+                    .on('result', row => {
+                        receivedResults = true;
+
+                        // Coerce and send back
+                        done(null, coerceResults(row));
+                    })
+                    .on('end', () => {
+                        
+                        // Stream returned an error at some point. send internal err
+                        if (returnErr) {
+                            done(returnErr);
+
+                        // No results found before end event; send 404
+                        } else if (!receivedResults) {
+                            done(this.errors.lost);
+                        }
+                    });
             }
         }
     },

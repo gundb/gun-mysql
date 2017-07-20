@@ -29,4 +29,8 @@ export default class Connector {
             this.pool.query(sql, vals, done);
         }
     }
+
+    queryStream(sql, vals) {
+        return this.pool.query(sql, vals);
+    }
 }
