@@ -1,4 +1,4 @@
-import {Flint, KeyValAdapter} from 'gun-flint';
+import {Flint, KeyValAdapter, Mixins} from './../../gun-flint';
 import Connector from './Connector';
 
 const type = {
@@ -68,46 +68,66 @@ function isNil(val) {
 Flint.register(new KeyValAdapter({
     initialized: false,
     ready: false,
-    get: function(key, done) {
+    mixins: [
+        Mixins.ResultStreamMixin
+    ],
+    get: function(key, stream) {
         if (this.initialized) {
             if (!this.ready) {
-                const get = this.get.bind(this, key, done);
+                const get = this.get.bind(this, key, stream);
                 setTimeout(get, 500);
             } else {
-                const connection = this.mysql.queryStream(`SELECT * FROM ${this.mysqlOptions.table} WHERE` + '`key`' + `= '${key}';`);
-                let receivedResults = false;
-                let returnErr = null;
+                const valStream = this.mysql.queryStream(`SELECT * FROM ${this._valTable()} WHERE` + '`key`' + `= '${key}';`);
+                const relStream = this.mysql.queryStream(`SELECT * FROM ${this._relTable()} WHERE` + '`key`' + `= '${key}';`);
+                
+                let resultStream = row => {
+                    stream.in(coerceResults(row));
+                };
 
-                // Stream Results back to gun
-                connection
-                    .on('error', err => {
-                        
-                        // Catch the err, retun on `end` event
-                        returnErr = this.errors.internal;
-                    })
-                    .on('fields', fields => {
-                        // the field packets for the rows to follow
-                        //console.log(fields); ignore
-                    })
-                    .on('result', row => {
-                        receivedResults = true;
-
-                        // Coerce and send back
-                        done(null, coerceResults(row));
-                    })
-                    .on('end', () => {
-                        
-                        // Stream returned an error at some point. send internal err
-                        if (returnErr) {
-                            done(returnErr);
-
-                        // No results found before end event; send 404
-                        } else if (!receivedResults) {
-                            done(this.errors.lost);
-                        }
-                    });
+                Promise.all([
+                    this._streamGetResults(valStream, resultStream),
+                    this._streamGetResults(relStream, resultStream)
+                ])
+                .then(results => {
+                    let isLost = (results && results.length === 2 && results[0] === this.errors.lost && results[1] === this.errors.lost)
+                    stream.done(isLost ? this.errors.lost : null);
+                })
+                .catch(stream.done);
             }
         }
+    },
+    _streamGetResults(db, stream) {
+        return new Promise((resolve, reject) => {
+            let receivedResults = false;
+            let returnErr = null;
+
+            // Stream Results back to gun
+            db
+                .on('error', err => {
+                    
+                    // Catch the err, retun on `end` event
+                    returnErr = this.errors.internal;
+                })
+                .on('result', row => {
+                    receivedResults = true;
+
+                    // Coerce and send back
+                    stream(row);
+                })
+                .on('end', () => {
+                    
+                    // Stream returned an error at some point. send internal err
+                    if (returnErr) {
+                        reject(returnErr);
+
+                    // No results found before end event; send 404
+                    } else if (!receivedResults) {
+                        resolve(this.errors.lost);
+                    } else {
+                        resolve();
+                    }
+                });
+        });
     },
     put: function(key, batch, done) {
         if (this.initialized) {
@@ -136,54 +156,124 @@ Flint.register(new KeyValAdapter({
                 })(batch, done);
 
                 batch.forEach(node => {
-                    _this.mysql.query([
-                        `SELECT id FROM ${table} WHERE `,
+                    const valStream = _this.mysql.queryStream([
+                        `SELECT id FROM ${this._valTable()} WHERE `,
                         '`key` = \'', key, '\' AND ',
                         `nodeKey = '${node.key}';`
-                    ].join(''), function(err, results) {
-                        if (err) {
-                            batchWriter.write(err);
-                        } else if (!results || results.length === 0) {
+                    ].join(''));
+                    const relStream = _this.mysql.queryStream([
+                        `SELECT id FROM ${this._relTable()} WHERE `,
+                        '`key` = \'', key, '\' AND ',
+                        `nodeKey = '${node.key}';`
+                    ].join(''));
 
-                            // NEW KEY:VAL
-                            _this.mysql.query(
-                                [
-                                    `INSERT INTO ${table} SET `,
-                                    '`key` = ?, `nodeKey` = ?, `rel` = ?, `val` = ?, `state` = ?, `type` = ?;'
-                                ].join(''),
-                                [
-                                    key,
-                                    node.key,
-                                    node.rel || '',
-                                    !isNil(node.val) ? node.val.toString() : '',
-                                    node.state || 0,
-                                    getTypeKey(node.val),
-                                ],
-                                batchWriter.write
-                            );
-                        } else {
+                    let update = row => {
+                        this._update(row.id, node, batchWriter);
+                    }
 
-                            // UPSERT
-                            _this.mysql.query(
-                                [
-                                    `UPDATE ${table} SET `,
-                                    '`rel` = ?, `val` = ?, `state` = ?, `type` = ? ',
-                                    'WHERE id = ? LIMIT 1;'
-                                ].join(''),
-                                [
-                                    node.rel || '',
-                                    !isNil(node.val) ? node.val.toString() : '',
-                                    node.state || 0,
-                                    getTypeKey(node.val),
-                                    results[0].id
-                                ],
-                                batchWriter.write
-                            );
+                    Promise.all([
+                        this._streamGetResults(valStream, update),
+                        this._streamGetResults(relStream, update)
+                    ])
+                    // DB Stream results.
+                    .then(results => {
+
+                        // Neither tables had any data
+                        if (results && results.length === 2 && results[0] === this.errors.lost && results[1] === this.errors.lost) {
+                            this._putKeyVal(key, node, batchWriter);
                         }
-                    });
+                    })
+                    // Pass Err to Write
+                    .catch(batchWriter.write);
                 });
             }
         }
+    },
+    _relTable: function() {
+        return `${this.mysqlOptions.table}_rel`;
+    },
+    _valTable: function() {
+        return `${this.mysqlOptions.table}_val`;
+    },
+    _update: function(id, node, batch) {
+        if (node && Object.keys(node).indexOf('rel') !== -1) {
+            this._updateRel(id, node, batch);
+        } else {
+            this._updateVal(id, node, batch);
+        }
+    },
+    _updateVal: function(id, node, batch) {
+        this.mysql.query(
+            [
+                `UPDATE ${this._valTable()} SET `,
+                '`val` = ?, `state` = ?, `type` = ? ',
+                'WHERE id = ? LIMIT 1;'
+            ].join(''),
+            [
+                !isNil(node.val) ? node.val.toString() : '',
+                node.state || 0,
+                getTypeKey(node.val),
+                id
+            ],
+            batch.write
+        );
+    },
+    _updateRel: function(id, node, batch) {
+        this.mysql.query(
+            [
+                `UPDATE ${this._relTable()} SET `,
+                '`rel` = ?, `state` = ? ',
+                'WHERE id = ? LIMIT 1;'
+            ].join(''),
+            [
+                !isNil(node.rel) ? node.rel.toString() : '',
+                node.state || 0,
+                id
+            ],
+            batch.write
+        );
+    },
+    _putKeyVal: function(key, node, batch) {
+        if (node && Object.keys(node).indexOf('rel') !== -1) {
+            this._putRel(key, node, batch);
+        } else {
+            this._putVal(key, node, batch);
+        }
+    },
+    _putVal: function(key, node, batch) {
+
+        // NEW KEY:VAL
+        this.mysql.query(
+            [
+                `INSERT INTO ${this._valTable()} SET `,
+                '`key` = ?, `nodeKey` = ?, `val` = ?, `state` = ?, `type` = ?;'
+            ].join(''),
+            [
+                key,
+                node.key,
+                !isNil(node.val) ? node.val.toString() : '',
+                node.state || 0,
+                getTypeKey(node.val),
+            ],
+            batch.write
+        );
+    },
+    _putRel: function(key, node, batch) {
+
+        // NEW KEY:REL
+        this.mysql.query(
+            [
+                `INSERT INTO ${this._relTable()} SET `,
+                '`key` = ?, `nodeKey` = ?, `rel` = ?, `state` = ?;'
+            ].join(''),
+            [
+                key,
+                node.key,
+                !isNil(node.rel) ? node.rel.toString() : '',
+                node.state || 0,
+            ],
+            batch.write
+        );
     },
     opt: function(context, opt, done) {
         let {mysql} = opt;
@@ -197,24 +287,58 @@ Flint.register(new KeyValAdapter({
         }
     },
     _tables: function() {
-        this.mysql.query(
-            [
-                `CREATE TABLE IF NOT EXISTS ${this.mysqlOptions.table} ( `,
-                '`id`      INTEGER NOT NULL AUTO_INCREMENT PRIMARY KEY, ',
-                '`key`    VARCHAR(64) NOT NULL, ',
-                '`nodeKey` VARCHAR(64) NOT NULL, ',
-                '`state`   BIGINT, ',
-                '`rel`     VARCHAR(64), ',
-                '`val`     LONGTEXT, ',
-                '`type`    TINYINT, ',
-                'INDEX key_index (`key`, `nodeKey`)',
-                ') ENGINE=INNODB;'
-            ].join(''),
-            (err, results) => {
-                if (!err) {
-                    this.ready = true;
+        Promise.all([
+            this._createValTable(),
+            this._createRelTable()
+        ]).then(() => {
+            this.ready = true;
+        });
+    },
+    _createValTable: function() {
+        return new Promise((resolve, reject) => {
+            this.mysql.query(
+                [
+                    `CREATE TABLE IF NOT EXISTS ${this._valTable()} ( `,
+                    '`id`      INTEGER NOT NULL AUTO_INCREMENT PRIMARY KEY, ',
+                    '`key`    VARCHAR(64) NOT NULL, ',
+                    '`nodeKey` VARCHAR(64) NOT NULL, ',
+                    '`state`   BIGINT, ',
+                    '`val`     LONGTEXT, ',
+                    '`type`    TINYINT, ',
+                    'INDEX key_index (`key`, `nodeKey`)',
+                    ') ENGINE=INNODB;'
+                ].join(''),
+                err => {
+                    if (!err) {
+                        resolve()
+                    } else {
+                        reject();
+                    }
                 }
-            }
-        );
+            );
+        });
+    },
+    _createRelTable: function() {
+        return new Promise((resolve, reject) => {
+            this.mysql.query(
+                [
+                    `CREATE TABLE IF NOT EXISTS ${this._relTable()} ( `,
+                    '`id`      INTEGER NOT NULL AUTO_INCREMENT PRIMARY KEY, ',
+                    '`key`    VARCHAR(64) NOT NULL, ',
+                    '`nodeKey` VARCHAR(64) NOT NULL, ',
+                    '`state`   BIGINT, ',
+                    '`rel`     TINYTEXT, ',
+                    'INDEX key_index (`key`, `nodeKey`)',
+                    ') ENGINE=INNODB;'
+                ].join(''),
+                err => {
+                    if (!err) {
+                        resolve()
+                    } else {
+                        reject();
+                    }
+                }
+            );
+        });
     }
 }));
