@@ -575,8 +575,8 @@ bignumber.js@4.0.2:
   resolved "https://registry.yarnpkg.com/bignumber.js/-/bignumber.js-4.0.2.tgz#2d1dc37ee5968867ecea90b6da4d16e68608d21d"
 
 binary-extensions@^1.0.0:
-  version "1.8.0"
-  resolved "https://registry.yarnpkg.com/binary-extensions/-/binary-extensions-1.8.0.tgz#48ec8d16df4377eae5fa5884682480af4d95c774"
+  version "1.9.0"
+  resolved "https://registry.yarnpkg.com/binary-extensions/-/binary-extensions-1.9.0.tgz#66506c16ce6f4d6928a5b3cd6a33ca41e941e37b"
 
 block-stream@*:
   version "0.0.9"
@@ -649,8 +649,8 @@ chokidar@^1.6.1:
     fsevents "^1.0.0"
 
 circular-json@^0.3.1:
-  version "0.3.1"
-  resolved "https://registry.yarnpkg.com/circular-json/-/circular-json-0.3.1.tgz#be8b36aefccde8b3ca7aa2d6afc07a37242c0d2d"
+  version "0.3.2"
+  resolved "https://registry.yarnpkg.com/circular-json/-/circular-json-0.3.2.tgz#c001b59d86aeffeabf9b5e96ebc71685e15df5d5"
 
 cli-cursor@^1.0.1:
   version "1.0.2"
@@ -1200,8 +1200,8 @@ growl@1.9.2:
   resolved "https://registry.yarnpkg.com/growl/-/growl-1.9.2.tgz#0ea7743715db8d8de2c5ede1775e1b45ac85c02f"
 
 gun-flint@^0.0:
-  version "0.0.5"
-  resolved "https://registry.yarnpkg.com/gun-flint/-/gun-flint-0.0.5.tgz#5bf791b46782c29a1534c706fcf134fd7ea61fc4"
+  version "0.0.7"
+  resolved "https://registry.yarnpkg.com/gun-flint/-/gun-flint-0.0.7.tgz#0977b4124103c51fe47bd85d1c8a6501ca341deb"
   dependencies:
     babel-runtime "^6.11.6"
 
@@ -1710,7 +1710,7 @@ mute-stream@0.0.5:
 
 mysql@mysqljs/mysql:
   version "2.13.0"
-  resolved "https://codeload.github.com/mysqljs/mysql/tar.gz/f11ccb3663ef525b76c9109e64bc541e75145fbb"
+  resolved "https://codeload.github.com/mysqljs/mysql/tar.gz/aa08925421395230ec187a77810229dbb37cdab6"
   dependencies:
     bignumber.js "4.0.2"
     readable-stream "2.3.3"

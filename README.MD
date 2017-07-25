@@ -31,9 +31,15 @@ const gun = new Gun({
         user: 'root',
         password: '',
         database: 'gun_mysql',
-        table: 'gun_mysql'
+        tablePrefix: 'gun_mysql',
+        logger: console // default logger
     }
 });
 ```
 
 You should start to see the table fill up with data from your Gun database!
+
+# TODO
+
+1. Test suite
+2. Queue transactional batch writes by key

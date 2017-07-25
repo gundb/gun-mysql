@@ -15,10 +15,6 @@ export default class Connector {
             password : this.opt.password || '',
             database : this.opt.database || 'gun_mysql'
         });
-
-        this.pool.getConnection(function(err, connection) {
-            console.log(err, connection);
-        });
     }
 
     query(sql, vals, done) {
@@ -32,5 +28,16 @@ export default class Connector {
 
     queryStream(sql, vals) {
         return this.pool.query(sql, vals);
+    }
+    getConnection() {
+        return new Promise((resolve, reject) => {
+            this.pool.getConnection(function(err, connection) {
+                if (err) {
+                    reject(err);
+                } else {
+                    resolve(connection);
+                }
+            });
+        });
     }
 }
