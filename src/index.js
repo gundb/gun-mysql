@@ -1,4 +1,4 @@
-import {Flint, KeyValAdapter, Mixins} from './../../gun-flint';
+import {Flint, KeyValAdapter, Mixins} from 'gun-flint';
 import ReactiveQueue from './queue/ReactiveQueue';
 import Queueable from './queue/Queueable';
 import BatchWriter from './BatchWriter';
@@ -200,12 +200,24 @@ Flint.register(new KeyValAdapter({
 
         // Begin Batch Transaction
         let _this = this;
-        var queue = [];
         connection.beginTransaction(err => {
             if (err) {
                 rollback(err);
             } else {
             
+                let queue = new ReactiveQueue();
+                const insertJob = new PutQueueable(connection, this);
+
+                let handled = 0;
+                let insertsQueued = false;
+                function enqueueInsertWhenReady() {
+                    handled++;
+                    if (handled === batch.length) {
+                        insertsQueued = true;
+                        queue.push(insertJob);
+                    }
+                }
+
                 batch.forEach(node => {
 
                     function put(jobDone) {
@@ -218,28 +230,43 @@ Flint.register(new KeyValAdapter({
                             jobDone();
                         }
 
-                        // Duing a put transaction, first row for any matching key + field pairs
-                        const valStream = _this.mysql.queryStream([
-                            `SELECT id FROM ${_this._valTable()} WHERE `,
-                            '`key` = \'', node.key, '\' AND ',
-                            `field = '${node.field}' LIMIT 1;`
-                        ].join(''));
-                        const relStream = _this.mysql.queryStream([
-                            `SELECT id FROM ${_this._relTable()} WHERE `,
-                            '`key` = \'', node.key, '\' AND ',
-                            `field = '${node.field}' LIMIT 1;`
-                        ].join(''));
-
                         // Prepare an update callback. Get results are streamed straight
                         // into the update callback.
                         let update = row => {
-                            _this._update(connection, row.id, node, writeDone);
+
+                            var deleteInsert = false;
+
+                            // New node is val; existing is a rel
+                            if (node.val && row.rel) {
+                                deleteInsert = true;
+                            }
+
+                            // New node is rel; existing is a val
+                            if (node.rel && row.val) {
+                                deleteInsert = true;
+                            }
+
+                            enqueueInsertWhenReady();
+
+                            // No need to proceed.
+                            if (deleteInsert) {
+                                writeDone();
+                                return;
+                            }
+
+                            let hasValChanged = node.val && node.val !== row.val;
+                            let hasRelChanged = node.rel && node.rel !== row.rel;
+                            if (hasValChanged || hasRelChanged) {
+                                _this._update(connection, row.id, node, writeDone);
+                            } else {
+                                writeDone();
+                            }
                         }
 
                         // Stream Get results, passing them to update as they are returned.
                         Promise.all([
-                            _this._streamGetResults(valStream, update),
-                            _this._streamGetResults(relStream, update)
+                            _this._streamGetResults(_this._streamNodeVal(node), update),
+                            _this._streamGetResults(_this._streamNodeRel(node), update)
                         ])
                         // DB Stream results.
                         .then(results => {
@@ -247,8 +274,21 @@ Flint.register(new KeyValAdapter({
                             // Neither tables had any data
                             let errors = _this.errors;
                             if (results && results.length === 2 && results[0] === errors.lost && results[1] === errors.lost) {
-                                _this._putKeyVal(connection, node.key, node, writeDone);
+
+                                // Updating a value
+                                if (node && Object.keys(node).indexOf('val') !== -1) {
+                                    insertJob.insertVal(node.key, node.field, !isNil(node.val) ? node.val.toString() : '', node.state || 0, getTypeKey(node.val));
+
+                                // Updateing a relationship
+                                } else {
+                                    insertJob.insertRel(node.key, node.field, !isNil(node.rel) ? node.rel.toString() : '', node.state || 0);
+                                }
+
+                                // This batch element has finished. The actual insert
+                                // will take place when the PutQueueable runs.
+                                jobDone();
                             }
+                            enqueueInsertWhenReady();
                         })
                         // Pass Err to Write
                         .catch(err => {
@@ -258,26 +298,29 @@ Flint.register(new KeyValAdapter({
                     }
 
                     // Add put request to queue
-                    queue.push(new PutQueueable(put));
+                    queue.push(new Queueable(put));
                 });
-
-                // Queue up batch
-                const writeBatch = this.batchWriter.batch(key, queue);
 
                 // If any one item fails, rollback the entire sequence
                 // and flush out the queue. The error bubble back up to Gun.
-                writeBatch.queue.on('item:err', err => {
-                    writeBatch.queue.flush(err);
+                queue.on('item:err', err => {
+                    queue.flush(err);
                 });
 
                 // Once the queue is empty, we the batch has been
                 // accepted without error. Commit the transaction.
                 // If an error is received, the queue was flushed
                 // prematurely due to a job error.
-                writeBatch.queue.on('queue:empty', flushErr => {
+                queue.on('queue:empty', flushErr => {
+
+                    // The batch errored somewhere along the line
+                    // Flush the queue and above transaction
                     if (flushErr) {
                         rollback(err);
-                    } else {
+                    
+                    // If the entire batch hasn't been handled
+                    // then wait until final inserts come in 
+                    } else if (insertsQueued) {
                         connection.commit(err => {
                             if (err) {
                                 rollback(err);
@@ -290,6 +333,22 @@ Flint.register(new KeyValAdapter({
                 });
             }
         });
+    },
+
+    _streamNodeVal(node) {
+        return this.mysql.queryStream([
+            `SELECT id, val FROM ${this._valTable()} WHERE `,
+            '`key` = \'', node.key, '\' AND ',
+            `field = '${node.field}' LIMIT 1;`
+        ].join(''));
+    },
+
+    _streamNodeRel(node) {
+        return this.mysql.queryStream([
+            `SELECT id, rel FROM ${this._relTable()} WHERE `,
+            '`key` = \'', node.key, '\' AND ',
+            `field = '${node.field}' LIMIT 1;`
+        ].join(''));
     },
 
     /**

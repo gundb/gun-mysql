@@ -2,9 +2,10 @@ export default class Query {
     constructor(query = '', vals = []) {
         this.query = [query];
         this.vals = vals;
+        return this;
     }
 
-    clause(clause, ...vals) {
+    clause(clause, ...vals) { 
         this.query.push(' ', clause);
         this.vals.push.apply(this.vals, vals);
     }
