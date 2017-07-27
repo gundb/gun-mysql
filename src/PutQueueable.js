@@ -2,79 +2,63 @@ import Queueable from './queue/Queueable';
 import BatchQuery from './BatchQuery';
 
 export default class PutQueueable extends Queueable {
-    constructor(connection, context) {
+    constructor(connection, tableName) {
         super();
         this.connection = connection;
-
-        // Init Queries
-        // 1. Update Value
-        this._updateVal = new BatchQuery(`INSERT INTO ${context._valTable()} (id, val, state, type) VALUES __VALS__ ON DUPLICATE KEY UPDATE id=VALUES(id)`);
-
-        // 2. Insert Value
-        this._insertVal = new BatchQuery(`INSERT INTO ${context._valTable()} (\`key\`, field, val, state, type) VALUES __VALS__`);
-
-        // 3. Update Relationship
-        this._updateRel = new BatchQuery(`INSERT INTO ${context._relTable()} (id, rel, state) VALUES __VALS__ ON DUPLICATE KEY UPDATE id=VALUES(id)`);
-
-        // 4. Insert Relationship
-        this._insertRel = new BatchQuery(`INSERT INTO ${context._relTable()} (\`key\`, field, rel, state) VALUES __VALS__`);
-
+        this._insertVal = new BatchQuery(`INSERT INTO ${tableName} (\`key\`, field, val, state, type, isRel) VALUES __VALS__`);
     }
 
     // Queueable Callback
     run(done) {
-        Promise.all([
-            //this._runUpdateVals(),
-            this._runInsertVals(),
-            //this._runUpdateRels(),
-            this._runInsertRels()
-        ])
+        this._runInsertVals()
         .then(() => done())
         .catch(err => done(err));
     }
-    // updateVal(val) {
-    //     this._updateVal.addVals(val);
-    // }
-    insertVal(...vals) {
+
+    /**
+     * All six parameters are required in order to add an insert
+     * 
+     * @public
+     * @instance
+     * 
+     * @param {string} key   The node UUID / key
+     * @param {string} field The field on the node
+     * @param {mixed}  val   The value for field
+     * @param {number} state Conflict resolution state
+     * @param {number} type  Mapped to value type
+     * @param {number} isRel Whether or not the value is a relations (as 0 or 1)
+     */
+    insertRow(...vals) {
+
+        // Safe guard
+        if (vals.length !== 6) {
+            return;
+        }
+
         this._insertVal.addVals(vals);
     }
-    // updateRel(val) {
-    //     this._updateRel.addVals(val);
-    // }
-    insertRel(...vals) {
-        this._insertRel.addVals(vals);
-    }
-    _runQuery(query, resolve, reject) {
-        if (!query.getVals().length) {
-            resolve()
-        } else {
-            this.connection.query(query.getQuery(), err => {
-                if (err) {
-                    reject();
-                } else {
-                    resolve();
-                }
-            });
-        }
-    }
-    // _runUpdateVals() {
-    //     return new Promise((resolve, reject) => {
-    //         this._runQuery(this._updateVal, resolve, reject);
-    //     });
-    // }
+
+    /**
+     * Run the batch insert against the DB.
+     * 
+     * @private
+     * @instance
+     * 
+     * @return Promise
+     */
     _runInsertVals() {
         return new Promise((resolve, reject) => {
-            this._runQuery(this._insertVal, resolve, reject);
-        });
-    }
-    // _runUpdateRels() {
-    //     return new Promise((resolve, reject) => {
-    //         this._runQuery(this._updateRel, resolve, reject);
-    //     });
-    // }
-    _runInsertRels() {
-        return new Promise((resolve, reject) => {
-            this._runQuery(this._insertRel, resolve, reject);
+            if (!this._insertVal.getVals().length) {
+                resolve();
+            } else {
+                this.connection.query(this._insertVal.getQuery(), err => {
+                    if (err) {
+                        reject();
+                    } else {
+                        resolve();
+                    }
+                });
+            }
         });
     }
 }

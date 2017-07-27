@@ -15,7 +15,11 @@ export default class Queueable extends Event {
        this.increment();
        try {
            this.run(res => {
-              this.emit('done', res);
+               if (res instanceof Error) {
+                   throw res;
+               } else {
+                 this.emit('done', res);
+               }
            });
        } catch(err) {
             this.onFail(err);

@@ -51,6 +51,8 @@ export default class ReactiveQueue extends Event {
                         this.emit('item:reqeue', requeue);
                         this.queue.push(requeue);
                     }, requeue.timeout);
+                } else if (this.queue.length) {
+                    this.run();
                 }
                 this.onDeck = null;
             });
