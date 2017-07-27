@@ -26,15 +26,26 @@ export default class ReactiveQueue extends Event {
             throw 'ReactiveQueue.push expects an instance that extends Queueable';
         }
 
+        // If its the first item, run prepare on it.
+        if (!this.queue.length) {
+            item.prepare();
+        }
+
         this.queue.push(item);
         this.emit('item:added', this.queue.length)
     }
     run() {
 
         if (!this.onDeck) {
+
             // Popoff first item
             this.onDeck = this.queue.shift();
             this.emit('item:ondeck', this.onDeck);
+
+            // Prepare next item
+            if (this.queue.length) {
+                this.queue[0].prepare();
+            }
 
             // Handle Finished 
             this.onDeck.on('done', res => {

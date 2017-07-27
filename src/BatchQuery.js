@@ -12,26 +12,11 @@ export default class BatchQuery extends Query {
 
     getQuery() {
         let valStr = '';
-
-        function join(vals) {
-            let retVal = '';
-            while (vals && vals.length) {
-                let val = vals.shift();
-                if (typeof val === 'string') {
-                    val = val.replace(/'/, "\\'");
-                    retVal = retVal + "'" + val + (vals.length ? "', " : "");
-                } else {
-                     retVal = retVal + ('' + val) + (vals.length ? ", " : "");
-                }
-            }
-            return retVal;
-        }
-
         while(this.vals.length) {
             let vals = this.vals.shift();
-            valStr += `(${join(vals)}), `;
+            valStr += `('${vals[0]}', '${vals[1]}', '${vals[2]}', ${vals[3]}, ${vals[4]}, ${vals[5]}), `;
         }
-        valStr = valStr.replace(/,\s*$/, ' ');
+        valStr = valStr.replace(/\,\s$/, ' ');
         return (this.query[0].replace('__VALS__', valStr) + ';');
     }
 

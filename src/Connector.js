@@ -29,15 +29,7 @@ export default class Connector {
     queryStream(sql, vals) {
         return this.pool.query(sql, vals);
     }
-    getConnection() {
-        return new Promise((resolve, reject) => {
-            this.pool.getConnection(function(err, connection) {
-                if (err) {
-                    reject(err);
-                } else {
-                    resolve(connection);
-                }
-            });
-        });
+    getConnection(connect) {
+        this.pool.getConnection(connect);
     }
 }

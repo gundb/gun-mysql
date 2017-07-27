@@ -1,6 +1,8 @@
 import {Flint, KeyValAdapter, Mixins} from 'gun-flint';
 import ReactiveQueue from './queue/ReactiveQueue';
+
 import Queueable from './queue/Queueable';
+import BatchQueueable from './BatchQueueable';
 import PutQueueable from './PutQueueable';
 import Connector from './Connector';
 import Query from './Query';
@@ -84,6 +86,9 @@ Flint.register(new KeyValAdapter({
     ready: false,
     unableToProceed: false,
     queue: new ReactiveQueue(),
+    written: 0,
+    start: null,
+    end: null,
     mixins: [
         Mixins.ResultStreamMixin
     ],
@@ -138,12 +143,9 @@ Flint.register(new KeyValAdapter({
                 };
 
                 // Promisify Stream
-                this._streamGetResults(valStream, resultStream)
-                .then(promiseResult => {
-                    let isLost = (promiseResult && promiseResult === this.errors.lost)
-                    stream.done(isLost ? this.errors.lost : null);
-                })
-                .catch(stream.done);
+                this._streamGetResults(valStream, resultStream, err => {
+                    stream.done(err === this.errors.lost ? this.errors.lost : null);
+                });
             }
         }
     },
@@ -168,6 +170,11 @@ Flint.register(new KeyValAdapter({
                     done();
                     return;
                 }
+
+                if (this.written === 0) {
+                    this.start = Date.now();
+                }
+
                 this._doPut(batch, done);   
             }
         }
@@ -186,56 +193,28 @@ Flint.register(new KeyValAdapter({
         // The design intent here is to have a queue of queues.
         // `this.queue` holds the batch queue. Each batch queue
         // is comprised of queued updates that are applied to the DB
-        this.queue.push(new Queueable(jobDone => {
-            this._putBatch(batch, err => {
+        this.queue.push(new BatchQueueable((connection, jobDone) => {
+            this._runPutTransaction(connection, batch, err => {
                 if (err) {
+                    // Log the err
+                    this.logger.log(err);
+
+                    // Tell Gun
                     done(this.errors.internal);
+
+                    // Tell queue
                     jobDone(err);
                 } else {
                     done();
                     jobDone();
                 }
-            });
-        }));
-    },
 
-    /**
-     * Run a batch update
-     * 
-     * @param {array}    batch   An array of key:val nodes to update
-     * @param {function} done    A callback to call once batch has been written
-     */
-    _putBatch(batch, jobDone) {
-
-        // First retreive a connection from the connection pool
-        // In order to start a tranaction. This connection will be
-        // used for the entire batch of writes/updates
-        this.mysql.getConnection().then(connection => {
-            this._runPutTransaction(connection, batch, err => {
-
-                // Data is written! Release connection back into the pool.
-                // This is critical otherwise the pool with become easily 
-                // overwhelmed after only a few writes
-                connection.release();
-                
-                if (err) {
-
-                    // Log the err
-                    this.logger.log(err);
-
-                    // Tell the queue the job failed
-                    jobDone(err);
-                } else {
-
-                    // Tell the queue that the job is finished
-                    jobDone();
+                this.written++;
+                if (this.written === 1000) {
+                    console.log((Date.now() - this.start) / 1000 + 's for 1000 nodes, 10k records');
                 }
             });
-        })
-        .catch(err => {
-            this.logger.error("Failed to retrieve connection to write key:val batch updates", err);
-            jobDone(err);
-        });
+        }, this.mysql));
     },
 
     /**
@@ -272,7 +251,7 @@ Flint.register(new KeyValAdapter({
                 // write queue.
                 let handled = 0;
                 let insertsQueued = false;
-                function enqueueInsertWhenReady(...insertVals) {
+                function enqueueInsertWhenReady(insertVals) {
 
                     // Increment counter.
                     handled++;
@@ -360,25 +339,23 @@ Flint.register(new KeyValAdapter({
                 } else {
                     jobDone();
                 }
-            })
-            // DB Stream results.
-            .then(result => {
-
+            },
+            err => {
                 // No data yet exists for this node key:val
-                if (result && result === _this.errors.lost) {
+                if (err === _this.errors.lost) {
                     let isRel = isRelNode(node) ? 1 : 0;
                     let val = isRel ? node.rel : node.val;
-                    enqueueInsertWhenReady(node.key, node.field, !isNil(val) ? val.toString() : '', node.state || 0, getTypeKey(val), isRel);
+                    enqueueInsertWhenReady([node.key, node.field, !isNil(val) ? val.toString() : '', node.state || 0, getTypeKey(val), isRel]);
 
                     // this batch element has finished. The actual insert
                     // will take place when the PutQueueable runs.
                     jobDone();
+                } else if (err) {
+                    _this.logger.error("Error retrieving results for batch update", err)
+                    jobDone(err);
+                } else {
+                    jobDone();
                 }
-            })
-            // Pass Err to Write
-            .catch(err => {
-                _this.logger.error("Error retrieving results for batch update", err)
-                 jobDone(err);
             });
         }
     },
@@ -396,41 +373,39 @@ Flint.register(new KeyValAdapter({
         ].join(''));
     },
 
-    _streamGetResults(db, stream) {
-        return new Promise((resolve, reject) => {
-            let receivedResults = false;
-            let returnErr = null;
+    _streamGetResults(db, stream, done) {
+        let receivedResults = false;
+        let returnErr = null;
 
-            // Stream Results back to gun
-            db
-                .on('error', err => {
-                    
-                    // Log
-                    this.logger.error("Errored retrieving results", err);
+        // Stream Results back to gun
+        db
+            .on('error', err => {
+                
+                // Log
+                this.logger.error("Errored retrieving results", err);
 
-                    // Catch the err, retun on `end` event
-                    returnErr = this.errors.internal;
-                })
-                .on('result', row => {
-                    receivedResults = true;
+                // Catch the err, retun on `end` event
+                returnErr = this.errors.internal;
+            })
+            .on('result', row => {
+                receivedResults = true;
 
-                    // Coerce and send back
-                    stream(row);
-                })
-                .on('end', () => {
-                    
-                    // Stream returned an error at some point. send internal err
-                    if (returnErr) {
-                        reject(returnErr);
+                // Coerce and send back
+                stream(row);
+            })
+            .on('end', () => {
+                
+                // Stream returned an error at some point. send internal err
+                if (returnErr) {
+                    done(returnErr);
 
-                    // No results found before end event; send 404
-                    } else if (!receivedResults) {
-                        resolve(this.errors.lost);
-                    } else {
-                        resolve();
-                    }
-                });
-        });
+                // No results found before end event; send 404
+                } else if (!receivedResults) {
+                    done(this.errors.lost);
+                } else {
+                    done();
+                }
+            });
     },
     _valTable: function() {
         return `${this.mysqlOptions.tablePrefix}_val`;
